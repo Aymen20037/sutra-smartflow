@@ -3,7 +3,6 @@ from dotenv import load_dotenv
 from pathlib import Path
 import base64
 from auth import show_auth_page
-from utils.email_sender import send_verification_code
 
 BASE_DIR = Path(__file__).parent
 load_dotenv(BASE_DIR / ".env")
@@ -23,12 +22,38 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap');
 
-* {
-    font-family: 'Poppins', sans-serif;
+/* ── Cacher les éléments Streamlit Cloud ─────────────── */
+header[data-testid="stHeader"] {
+    display: none !important;
+}
+
+#MainMenu {
+    display: none !important;
+}
+
+footer {
+    display: none !important;
 }
 
 [data-testid="stAppDeployButton"] {
     display: none !important;
+}
+
+[data-testid="stToolbar"] {
+    display: none !important;
+}
+
+[data-testid="stStatusWidget"] {
+    display: none !important;
+}
+
+.stAppToolbar {
+    display: none !important;
+}
+
+/* ── Style général ───────────────────────────────────── */
+* {
+    font-family: 'Poppins', sans-serif;
 }
 
 body {
@@ -46,13 +71,6 @@ section[data-testid="stSidebar"] {
     min-width: 200px;
 }
 
-section[data-testid="stSidebar"]::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    z-index: -1;
-}
-
 section[data-testid="stSidebar"] * {
     color: #E0E0E0 !important;
 }
@@ -68,14 +86,8 @@ section[data-testid="stSidebar"] .stRadio > div > label {
 
 section[data-testid="stSidebar"] .stRadio > div > label:hover {
     background-color: #FFFFFF;
-    color: #151A2D;
-    transform: translateX(4px);
-}
-
-section[data-testid="stSidebar"] .stRadio input:checked + span {
-    background-color: #FFFFFF !important;
     color: #151A2D !important;
-    border-radius: 8px;
+    transform: translateX(4px);
 }
 
 /* User card */
@@ -102,7 +114,6 @@ section[data-testid="stSidebar"] .stRadio input:checked + span {
     font-weight: 700;
     color: #fff !important;
     flex-shrink: 0;
-    letter-spacing: 0.5px;
 }
 
 .user-info {
@@ -136,63 +147,29 @@ section[data-testid="stSidebar"] .stRadio input:checked + span {
     border-radius: 20px;
     font-size: 10px;
     font-weight: 600;
-    letter-spacing: 0.4px;
     background: rgba(79, 142, 247, 0.15);
     color: #4F8EF7 !important;
     border: 1px solid rgba(79, 142, 247, 0.3);
     text-transform: capitalize;
 }
 
-/* Logout button */
-section[data-testid="stSidebar"] .logout-btn-wrapper {
-    margin: 4px 0;
-}
-
+/* Bouton déconnexion */
 section[data-testid="stSidebar"] div[data-testid="stButton"] button {
     background: linear-gradient(135deg, #EF4444 0%, #F97316 100%) !important;
     border: none !important;
     border-radius: 8px !important;
     box-shadow: 0 2px 8px rgba(239, 68, 68, 0.35) !important;
-    transition: all 0.25s ease !important;
 }
 
 section[data-testid="stSidebar"] div[data-testid="stButton"] button:hover {
     background: linear-gradient(135deg, #DC2626 0%, #EA580C 100%) !important;
-    box-shadow: 0 4px 14px rgba(239, 68, 68, 0.5) !important;
     transform: translateX(2px) !important;
 }
 
-section[data-testid="stSidebar"] div[data-testid="stButton"] button p,
-section[data-testid="stSidebar"] div[data-testid="stButton"] button span,
 section[data-testid="stSidebar"] div[data-testid="stButton"] button * {
     color: #FFFFFF !important;
     font-size: 13px !important;
     font-weight: 600 !important;
-}
-
-@media (max-width: 1024px) {
-    section[data-testid="stSidebar"] {
-        width: 70px;
-    }
-    section[data-testid="stSidebar"] .stRadio > div > label span {
-        display: none;
-    }
-    section[data-testid="stSidebar"] .stRadio > div > label::after {
-        content: attr(title);
-        position: absolute;
-        left: 70px;
-        background: #FFFFFF;
-        color: #151A2D;
-        padding: 4px 8px;
-        border-radius: 4px;
-        white-space: nowrap;
-        opacity: 0;
-        transition: opacity 0.2s ease;
-        pointer-events: none;
-    }
-    section[data-testid="stSidebar"] .stRadio > div > label:hover::after {
-        opacity: 1;
-    }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -204,26 +181,28 @@ with st.sidebar:
     if logo_path.exists():
         with open(logo_path, "rb") as f:
             logo_b64 = base64.b64encode(f.read()).decode()
+
         st.markdown(
             f"""
-            <a href="/" target="_self" style="display:block; text-align:center; cursor:pointer;">
-                <img src="data:image/png;base64,{logo_b64}" width="220" style="border-radius:8px;" />
+            <a href="/" target="_self" style="display:block; text-align:center;">
+                <img src="data:image/png;base64,{logo_b64}" width="220"
+                     style="border-radius:8px;" />
             </a>
             """,
             unsafe_allow_html=True
         )
 
     st.markdown(
-        "<div class='company-subtitle'>Gestion des Opérations Douanières</div>",
+        "<div style='text-align:center; font-size:12px; color:#AAB3CC;'>Gestion des Opérations Douanières</div>",
         unsafe_allow_html=True
     )
+
     st.divider()
 
-    # ── User card ──────────────────────────────────────────
-    username  = user.get("username", "")
-    email     = user.get("email", "")
-    role      = user.get("role", "user")
-    initials  = "".join(p[0].upper() for p in username.split()[:2]) or "U"
+    username = user.get("username", "")
+    email = user.get("email", "")
+    role = user.get("role", "user")
+    initials = "".join(p[0].upper() for p in username.split()[:2]) or "U"
 
     st.markdown(
         f"""
@@ -256,12 +235,11 @@ with st.sidebar:
 
     st.divider()
 
-# ── Logout button ──────────────────────────────────────
-    logout = st.button("⎋  Déconnexion", key="logout", use_container_width=True)
-
-    if logout:
-        del st.session_state["user"]
-        st.rerun()
+    logout = st.button(
+        "⎋  Déconnexion",
+        key="logout",
+        use_container_width=True
+    )
 
     if logout:
         del st.session_state["user"]
@@ -270,7 +248,6 @@ with st.sidebar:
     st.divider()
     st.caption("Version 1.0")
     st.caption("© SUTRA SmartFlow")
-
 
 if page == " Tableau de bord":
     from modules.dashboard import show_dashboard
