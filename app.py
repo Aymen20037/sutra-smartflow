@@ -22,34 +22,26 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600&display=swap');
 
-/* ── Cacher les éléments Streamlit Cloud ─────────────── */
-header[data-testid="stHeader"] {
-    display: none !important;
-}
-
-#MainMenu {
-    display: none !important;
-}
-
-footer {
-    display: none !important;
-}
-
-[data-testid="stAppDeployButton"] {
-    display: none !important;
-}
-
-[data-testid="stToolbar"] {
-    display: none !important;
-}
-
-[data-testid="stStatusWidget"] {
-    display: none !important;
-}
-
-.stAppToolbar {
-    display: none !important;
-}
+/* ── Cacher TOUS les éléments Streamlit Cloud & GitHub ── */
+header[data-testid="stHeader"]          { display: none !important; }
+#MainMenu                                { display: none !important; }
+footer                                   { display: none !important; }
+[data-testid="stAppDeployButton"]        { display: none !important; }
+[data-testid="stToolbar"]               { display: none !important; }
+[data-testid="stStatusWidget"]          { display: none !important; }
+[data-testid="stDecoration"]            { display: none !important; }
+[data-testid="stDeployButton"]          { display: none !important; }
+.stDeployButton                          { display: none !important; }
+.stAppToolbar                            { display: none !important; }
+.stAppDeployButton                       { display: none !important; }
+.viewerBadge_container__r5tak           { display: none !important; }
+.viewerBadge_link__qRIco                { display: none !important; }
+#GithubIcon                             { display: none !important; }
+iframe[title="streamlit_cloud_badge"]   { display: none !important; }
+a[href*="github.com"]                   { display: none !important; }
+a[href*="streamlit.io"]                 { display: none !important; }
+button[title="Fork this app"]           { display: none !important; }
+button[kind="header"]                   { display: none !important; }
 
 /* ── Style général ───────────────────────────────────── */
 * {
@@ -200,8 +192,8 @@ with st.sidebar:
     st.divider()
 
     username = user.get("username", "")
-    email = user.get("email", "")
-    role = user.get("role", "user")
+    email    = user.get("email", "")
+    role     = user.get("role", "user")
     initials = "".join(p[0].upper() for p in username.split()[:2]) or "U"
 
     st.markdown(
