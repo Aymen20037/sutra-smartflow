@@ -1,6 +1,7 @@
 # Rapport d'analyse complet du projet Streamlit SUTRA SmartFlow
 
-Date de l'analyse : 2026-06-11  
+Date de l'analyse : 2026-07-01  
+Dernière mise à jour : 2026-07-01 (ajout module admin, module déclaration douanière, dépendances Excel)  
 
 ## 1. Portee de lecture effectuee
 
@@ -25,8 +26,8 @@ Elements principaux a la racine :
 
 | Chemin | Role observe |
 |---|---|
-| `app.py` | Point d'entree Streamlit, configuration UI, sidebar, navigation entre modules |
-| `auth.py` | Ecran de connexion, inscription et reinitialisation de mot de passe |
+| `app.py` | Point d'entree Streamlit, configuration UI, sidebar, navigation entre modules (incl. navigation admin pour les administrateurs) |
+| `auth.py` | Ecran de connexion, inscription et reinitialisation de mot de passe (avec codes email 6 chiffres) |
 | `requirements.txt` | Dependances Python attendues |
 | `.env` | Configuration secrete locale, avec `GROQ_API_KEY` |
 | `.streamlit/config.toml` | Configuration Streamlit, `fileWatcherType = "none"` |
@@ -43,7 +44,7 @@ Extensions presentes dans tout le dossier :
 
 | Extension | Nombre |
 |---|---:|
-| `.py` | 729 |
+| `.py` | 732 |
 | `.pyc` | 682 |
 | `.exe` | 16 |
 | `.txt` | 8 |
@@ -59,24 +60,28 @@ Extensions presentes dans tout le dossier :
 
 Le projet est une application Streamlit nommee **SUTRA SmartFlow**, orientee gestion de dossiers de transit douanier. Elle permet :
 
-- l'authentification locale d'utilisateurs ;
+- l'authentification locale d'utilisateurs (avec reinitialisation par code email 6 chiffres) ;
 - le televersement de documents douaniers ;
 - l'extraction OCR du contenu de PDF/images ;
 - l'extraction structuree via IA Groq ;
 - la persistance dans SQLite ;
 - la revision manuelle d'articles extraits ;
 - l'export JSON/XML/CSV ;
-- l'interrogation d'un assistant IA contextualise par dossier.
+- l'interrogation d'un assistant IA contextualise par dossier ;
+- **l'administration globale** (dashboard admin, gestion utilisateurs, gestion documents) ;
+- **la generation de declarations douanieres Excel** (format officiel marocain).
 
 Le flux principal est :
 
 1. `app.py` charge `.env`, configure Streamlit et exige une session utilisateur.
-2. `auth.py` initialise SQLite et gere login/inscription/reinitialisation.
+2. `auth.py` initialise SQLite et gere login/inscription/reinitialisation (codes email).
 3. `modules/uploader.py` sauvegarde les fichiers dans `uploads/`, lance OCR puis Groq.
-4. `utils/database.py` cree/alimente les tables `dossiers_transit`, `documents_commerciaux`, `articles_extraits`.
+4. `utils/database.py` cree/alimente les tables `dossiers_transit`, `documents_commerciaux`, `articles_extraits`, `users` (avec `is_active`), `password_reset_codes`, tables Excel douanier.
 5. `modules/review.py` permet de corriger les articles.
 6. `modules/export.py` genere des exports douaniers.
 7. `modules/chat_assistant.py` construit un contexte dossier et interroge Groq.
+8. **`modules/admin.py`** : dashboard admin (stats globales, graphiques), gestion utilisateurs (CRUD, activation, roles), gestion documents (vue globale, apercu, suppression).
+9. **`modules/excel_douanier.py`** : generation de declaration douaniere Excel (lignes detail, recap HS, poids packing list) avec template officiel marocain.
 
 ## 4. Technologies et dependances
 
@@ -93,10 +98,11 @@ Dependances declarees dans `requirements.txt` :
 - `plotly>=5.0.0`
 - `pytesseract>=0.3.10`
 - `bcrypt>=4.0.0`
+- `openpyxl>=3.1.0`
+- `xlrd>=2.0.1`
 
 Dependances utilisees dans le code mais non declarees explicitement dans `requirements.txt` :
 
-- `pandas`, utilise dans `modules/dashboard.py` et `modules/review.py` ;
 - `requests`, utilise dans `utils/helpers.py` pour les taux de change ;
 - `torch`, importe dynamiquement dans `utils/ocr.py` pour detecter CUDA avant EasyOCR.
 
@@ -114,19 +120,20 @@ Role :
 - injecte beaucoup de CSS ;
 - affiche le logo `sutra.png` dans la sidebar ;
 - affiche une carte utilisateur ;
-- gere la navigation radio vers cinq pages :
-  - Tableau de bord ;
-  - Televersement ;
-  - Revision ;
-  - Export ;
-  - Assistant IA.
+- gere la navigation radio conditionnelle :
+  - **Pour les administrateurs** :
+    - Dashboard Admin
+    - Gestion utilisateurs
+    - Gestion documents
+  - **Pour les utilisateurs standards** :
+    - Tableau de bord
+    - Televersement
+    - Revision
+    - Export
+    - Assistant IA
+    - Declaration
 
-Point notable : le bloc de deconnexion est duplique deux fois :
-
-- premier `if logout: del st.session_state["user"]; st.rerun()`
-- second bloc identique juste apres.
-
-Le second bloc est inatteignable en pratique apres `st.rerun()`, mais il reste un doublon clair.
+Point notable : le bloc de deconnexion est duplique deux fois dans la version anterieure, mais **la version actuelle n'a qu'un seul bloc de deconnexion** (ligne 239-247), le doublon a ete corrige.
 
 ### `auth.py`
 
@@ -239,10 +246,34 @@ Point confirme dans le code : ligne contenant un `V` isole avant le `span` de la
 
 ```html
 <div class="topbar">
-V            <span class="topbar-badge">
+V            <span class="topbar-badge topbar-badge">
 ```
 
 Ce `V` sera rendu comme texte parasite dans l'interface.
+
+### `modules/admin.py` (NOUVEAU)
+
+Role :
+- module d'administration reserve aux utilisateurs `role == "admin"` ;
+- trois sous-pages accessibles depuis la sidebar admin :
+  1. **Dashboard Admin** : metriques globales (utilisateurs, admins, comptes actifs, documents, documents valides/en attente/rejetes, espace disque), graphiques Plotly (repartition des roles, documents par statut) ;
+  2. **Gestion Utilisateurs** : tableau filtre/recherche (nom, email, role, statut), edition inline (username, email, role, actif/inactif), activation/desactivation, suppression avec confirmation ; protection contre l'auto-suppression ou retrait de ses propres droits admin ;
+  3. **Gestion Documents** : vue globale de tous les documents avec filtres (recherche texte, statut dossier, type document), apercu image/PDF, telechargement, suppression (fichier disque + base) avec confirmation.
+
+Dependances : `utils.database` (get_admin_stats, get_all_users, get_all_documents_with_owner, update_user, set_user_active, delete_user, delete_document).
+
+Securite : decorateur `require_admin()` verifie `st.session_state["user"]["role"] == "admin"` avant tout affichage.
+
+### `modules/excel_douanier.py` (NOUVEAU)
+
+Role :
+- module "Declaration" accessible aux utilisateurs standards ;
+- gestion des lignes de declaration douaniere par dossier (import Excel, edition, calculs automatiques) ;
+- trois tables dediees : `excel_lignes_detail` (lignes brutes), `excel_recap_hs` (recap par code SH), `excel_poids_packing` (poids packing list) ;
+- fonctions : import depuis Excel (openpyxl/xlrd), calcul automatique des recaps par code SH (quantite, valeur, poids net, liste PN, nb lignes), gestion packing list (poids net/brut par PN), export Excel recap ;
+- utilise `utils.database` : get_excel_lignes, save_excel_lignes, delete_excel_lignes, get_excel_recap, calcule_et_sauvegarde_recap, save_packing_data.
+
+Dependances nouvelles : `openpyxl>=3.1.0`, `xlrd>=2.0.1` (ajoutees dans `requirements.txt`).
 
 ## 6. Couche utilitaire
 
@@ -253,9 +284,20 @@ Role :
 - fournit une connexion SQLite vers `transit_douanier.db` ;
 - cree les tables au demarrage ;
 - ajoute des colonnes manquantes par migrations `ALTER TABLE` silencieuses ;
-- gere CRUD utilisateurs, dossiers, documents, articles ;
+- gere CRUD utilisateurs, dossiers, documents, articles, **tables Excel douanier** ;
 - filtre les dossiers selon l'utilisateur connecte ;
 - cache `init_database()` avec `st.cache_resource`.
+- **Nouvelles fonctions admin** :
+  - `get_admin_stats()` : agregats globaux (users, admins, actifs, documents, statuts, stockage) ;
+  - `get_all_users()` : liste complete utilisateurs (id, username, email, role, is_active, date_creation) ;
+  - `get_all_documents_with_owner()` : documents joints dossiers + users proprietaires ;
+  - `update_user(user_id, username, email, role, is_active)` : mise a jour avec controle unicite email ;
+  - `set_user_active(user_id, is_active)` : activation/desactivation simple ;
+  - `delete_user(user_id)` : suppression utilisateur ;
+  - `delete_document(document_id)` : suppression document (cascade sur articles) ;
+  - `ensure_default_admin()` : creation auto `admin@gmail.com` / `admin123` (role admin, actif) si absent ;
+  - `create_reset_code`, `verify_reset_code`, `consume_reset_code` : gestion codes reinitialisation 6 chiffres (valides 10 min, table `password_reset_codes`) ;
+  - `update_user_password(email, new_password)` : maj mot de passe par email.
 
 Securite mots de passe :
 
@@ -343,9 +385,11 @@ Colonnes :
 - `email TEXT UNIQUE NOT NULL`
 - `password_hash TEXT NOT NULL`
 - `role TEXT DEFAULT 'user' CHECK(role IN ('admin', 'user'))`
+- `is_active INTEGER DEFAULT 1`  -- NOUVEAU : activation/desactivation compte
 - `date_creation TIMESTAMP DEFAULT CURRENT_TIMESTAMP`
 
-Nombre de lignes : 3
+Index : `idx_users_role_active` sur `(role, is_active)` -- NOUVEAU
+Nombre de lignes : 3 (incl. admin par defaut `admin@gmail.com` cree par `ensure_default_admin()`)
 
 ### `dossiers_transit`
 
@@ -419,6 +463,76 @@ Index : `idx_articles_document` sur `document_id`
 Nombre de lignes : 212
 
 Des donnees d'exemple historiques sont presentes, notamment des lignes nommees `Article de demonstration ...`.
+
+### `password_reset_codes` (NOUVELLE)
+
+Table pour la reinitialisation de mot de passe par code email 6 chiffres.
+
+Colonnes :
+
+- `id INTEGER PRIMARY KEY AUTOINCREMENT`
+- `email TEXT NOT NULL`
+- `code TEXT NOT NULL`  -- code 6 chiffres
+- `expires_at TIMESTAMP NOT NULL`  -- validite 10 minutes
+- `used INTEGER DEFAULT 0`  -- marque comme utilise apres changement mot de passe
+- `created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`
+
+Fonctions associees : `create_reset_code()`, `verify_reset_code()`, `consume_reset_code()`, `update_user_password()`.
+
+### `excel_lignes_detail` (NOUVELLE)
+
+Table pour les lignes brutes de declaration douaniere importees depuis Excel.
+
+Colonnes principales :
+
+- `id INTEGER PRIMARY KEY AUTOINCREMENT`
+- `dossier_id INTEGER DEFAULT 0`
+- `source_fichier TEXT DEFAULT ''`
+- `qte REAL DEFAULT 0`
+- `desi TEXT DEFAULT ''`
+- `hs TEXT DEFAULT ''`
+- `val REAL DEFAULT 0`
+- `poids_net REAL DEFAULT 0`
+- `pn TEXT DEFAULT ''`
+- `date_ajout TIMESTAMP DEFAULT CURRENT_TIMESTAMP`
+
+Index : `idx_excel_lignes_dossier` sur `dossier_id`
+
+### `excel_recap_hs` (NOUVELLE)
+
+Table pour le recapitulatif par code SH (calcul automatique).
+
+Colonnes principales :
+
+- `id INTEGER PRIMARY KEY AUTOINCREMENT`
+- `dossier_id INTEGER DEFAULT 0`
+- `hs TEXT DEFAULT ''`
+- `desi TEXT DEFAULT ''`
+- `qte_total REAL DEFAULT 0`
+- `val_total REAL DEFAULT 0`
+- `poids_net_total REAL DEFAULT 0`
+- `pn_liste TEXT DEFAULT ''`
+- `nb_lignes INTEGER DEFAULT 0`
+- `date_calcul TIMESTAMP DEFAULT CURRENT_TIMESTAMP`
+
+Index : `idx_excel_recap_dossier` sur `dossier_id`
+
+### `excel_poids_packing` (NOUVELLE)
+
+Table pour les poids (net/brut) par packing list (PN).
+
+Colonnes principales :
+
+- `id INTEGER PRIMARY KEY AUTOINCREMENT`
+- `dossier_id INTEGER NOT NULL`  -- FK vers dossiers_transit avec ON DELETE CASCADE
+- `source_fichier TEXT`
+- `desi TEXT`
+- `pn TEXT`
+- `qte REAL DEFAULT 0`
+- `poids_net REAL DEFAULT 0`
+- `poids_brut REAL DEFAULT 0`
+
+Index : `idx_excel_packing_dossier` sur `dossier_id`
 
 ## 8. Fichiers uploades
 
@@ -517,15 +631,20 @@ Points importants :
 ## 11. Points forts
 
 - Architecture lisible et separee : `modules/` pour les pages, `utils/` pour les services.
-- Flux metier coherent : upload -> OCR -> IA -> base -> revision -> export -> assistant.
+- Flux metier coherent : upload -> OCR -> IA -> base -> revision -> export -> assistant -> **admin -> declaration douaniere**.
 - Persistance SQLite simple, facile a inspecter et deployer localement.
-- Authentification locale avec hachage bcrypt si disponible.
+- Authentification locale avec hachage bcrypt si disponible, **reinitialisation par code email 6 chiffres (table `password_reset_codes`)**.
 - Fallback OCR Tesseract -> EasyOCR.
 - Fallback multi-modeles Groq pour l'extraction.
 - Gestion correcte de plusieurs cas vides dans le dashboard et la revision.
 - Exports en trois formats utiles : JSON, XML, CSV.
 - Assistant IA limite explicitement au contexte du dossier actif.
 - Migration progressive de schema via `ALTER TABLE`, utile pour faire evoluer une base existante.
+- **Module d'administration complet** : dashboard stats, gestion utilisateurs (CRUD, roles, activation), gestion documents (vue globale, apercu, suppression fichier+base) avec securite `require_admin()`.
+- **Module declaration douaniere Excel** : import Excel, calculs recap par SH, gestion packing list, template officiel marocain, tables dediees.
+- **Dependances Excel declarees** : `openpyxl`, `xlrd` dans `requirements.txt`.
+- **Admin par defaut auto-cree** : `ensure_default_admin()` cree `admin@gmail.com` / `admin123` si absent.
+- **Protection auto-suppression admin** : un admin ne peut pas retirer ses propres droits ni desactiver son compte.
 
 ## 12. Limitations, risques et points incomplets
 
@@ -534,10 +653,11 @@ Points importants :
 - `.claude/settings.local.json` contient un jeton en clair. Il devrait etre retire du projet, revoque si reel, et gere via variables d'environnement non versionnees.
 - `.env` contient une cle Groq locale. Le rapport ne l'expose pas, mais le projet doit s'assurer que `.env` n'est jamais partage.
 - Les donnees OCR/IA sont imprimees dans la console par `utils/ai_extractor.py`; cela peut exposer factures, montants, adresses, destinataires.
-- Reinitialisation de mot de passe sans email ni jeton temporaire.
-- Inscription ouverte sans validation d'email.
-- Politique de mot de passe minimale.
+- **Reinitialisation de mot de passe par code email implementee** (table `password_reset_codes`, codes 6 chiffres, validite 10 min), mais **pas d'envoi email reel** (le code est affiche/logge uniquement pour test).
+- Inscription ouverte sans validation d'email ni approbation admin.
+- Politique de mot de passe minimale (6 caracteres).
 - Absence apparente de protection contre bruteforce login.
+- **Mot de passe admin par defaut faible** : `admin123` (doit etre change en production).
 
 ### Portabilite
 
@@ -548,9 +668,10 @@ Points importants :
 
 ### Dependances
 
-- `pandas`, `requests` et `torch` sont utilises mais absents de `requirements.txt`.
+- `requests` et `torch` sont utilises mais absents de `requirements.txt`.
 - `opencv-python-headless` est declare mais pas observe comme utilise directement dans le code applicatif lu.
 - `get_exchange_rates` est importe dans `modules/export.py` mais non utilise.
+- `pandas` est maintenant declare dans `requirements.txt` (via dependances transitives ou ajout recent).
 
 ### Base de donnees
 
@@ -558,6 +679,8 @@ Points importants :
 - Les migrations masquent toutes les exceptions.
 - Les anciens dossiers sans `user_id` creent une rupture de visibilite apres introduction du filtrage utilisateur.
 - Les chemins absolus stockes en base rendent la base peu portable.
+- **Table `password_reset_codes` sans index sur `email`** : recherche lineaire pour invalidation anciens codes.
+- **Tables Excel sans cles etrangeres explicites** vers `dossiers_transit` (sauf `excel_poids_packing` qui a FK avec CASCADE).
 
 ### Fonctionnel
 
@@ -569,13 +692,16 @@ Points importants :
 - L'export considere les valeurs comme USD meme si la devise extraite peut differer.
 - `modules/export.py` duplique une logique de conversion au lieu d'utiliser `utils/helpers.py`.
 - Le statut de dossier ne semble pas passer automatiquement a `Valide` ou `Exporte`.
+- **Module admin : pas de pagination** sur les tableaux utilisateurs/documents (charge tout en memoire).
+- **Module admin : pas de logs d'audit** pour les actions sensibles (suppression user/document, changement role).
+- **Module declaration : pas de validation métier** sur les lignes importees (SH invalides, quantites negatives, etc.).
 
 ### UI et qualite de code
 
 - Un `V` parasite est present dans le HTML de `modules/chat_assistant.py`.
-- Bloc de deconnexion duplique dans `app.py`.
+- **Bloc de deconnexion duplique CORRIGE** dans `app.py` (version actuelle : un seul bloc).
 - Beaucoup de CSS inline dans les fichiers Python, ce qui rend la maintenance UI plus lourde.
-- Plusieurs imports inutilises.
+- Plusieurs imports inutilises (ex: `validate_sh_code`, `format_currency`, `json`, `io`, `base64`, `get_articles_by_document` dans `uploader.py`).
 - Certains commentaires semblent historiques ou issus d'iterations successives.
 
 ## 13. Ce qui m'a surpris ou semble notable
@@ -587,9 +713,12 @@ Points importants :
 - L'application possede deux mecanismes de conversion de devises : un dynamique dans `utils/helpers.py`, un statique dans `modules/export.py`.
 - Le code d'extraction IA est tres detaille et prompt-engineere, plus avance que les validations metier post-extraction.
 - L'assistant IA est bien contextualise mais depend des donnees deja stockees, donc il herite de toutes les erreurs OCR/IA/revision.
+- **Ajout recent de deux modules majeurs** (`admin.py` et `excel_douanier.py`) qui transforment l'application en solution complete avec back-office admin et generation de declaration officielle.
+- **Reinitialisation mot de passe par code email implementee** coted base/table mais pas cotenvoi email reel.
+- **Admin par defaut auto-cree** au premier lancement (`ensure_default_admin()`), ce qui facilite le deploiement mais impose un changement de mot de passe immediat.
 
 ## 14. Synthese finale
 
-SUTRA SmartFlow est une application Streamlit locale de gestion documentaire douaniere avec une architecture simple et comprehensible. Le coeur du produit est deja present : authentification, upload, OCR, extraction IA, revision, dashboard, export et assistant conversationnel.
+SUTRA SmartFlow est une application Streamlit locale de gestion documentaire douaniere avec une architecture simple et comprehensible. Le coeur du produit est maintenant **complet** : authentification (avec reset par code), upload, OCR, extraction IA, revision, dashboard, export, assistant conversationnel, **back-office administration** (dashboard stats, gestion users, gestion documents), **module declaration douaniere Excel** (import, recap SH, packing list, template officiel marocain).
 
-Le projet est cependant dans un etat de prototype avance plutot que production : secrets locaux presents, environnement virtuel casse, chemins absolus historiques, dependances incompletes, validations metier limitees, logs sensibles et quelques incoherences de maintenance. Les fondations sont bonnes, mais les priorites avant un usage serieux seraient la securisation des secrets/logs, la portabilite de l'environnement, la correction des chemins en base, l'alignement des devises/conversions, et le durcissement des controles metier.
+Le projet est cependant dans un etat de prototype avance plutot que production : secrets locaux presents, environnement virtuel casse, chemins absolus historiques, dependances incompletes (`requests`, `torch` manquant dans requirements), validations metier limitees, logs sensibles, pas d'envoi email reel pour reset, pas de logs d'audit admin, pas de pagination admin, mot de passe admin par defaut faible. Les fondations sont bonnes, mais les priorites avant un usage serieux seraient la securisation des secrets/logs, la portabilite de l'environnement, la correction des chemins en base, l'alignement des devises/conversions, le durcissement des controles metier, **l'envoi email reel**, **l'audit admin**, et **le changement obligatoire du mot de passe admin initial**.

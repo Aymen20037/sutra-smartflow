@@ -104,6 +104,7 @@ def _apply_admin_style():
           margin-right: 16px;
           vertical-align: middle;
           line-height: 1;
+          color: white;
         }
         .header-title {
           display: inline;

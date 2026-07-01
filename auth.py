@@ -10,6 +10,7 @@ from utils.database import (
     verify_password,
 )
 from utils.email_sender import send_verification_code
+from utils.auth_cookie import set_auth_cookie
 
 
 def show_auth_page():
@@ -57,6 +58,8 @@ def show_login():
         user = verify_password(email, password)
         if user:
             st.session_state["user"] = user
+            # Créer le cookie d'authentification persistante
+            set_auth_cookie(user)
             st.success("Connexion réussie.")
             st.rerun()
         else:

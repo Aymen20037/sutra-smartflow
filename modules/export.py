@@ -2,11 +2,13 @@ import streamlit as st
 from utils.database import get_current_user_dossiers, get_dossier_by_ref, get_documents_by_dossier, get_articles_by_document
 from utils.helpers import format_currency, calculate_total_weight, calculate_total_value, get_exchange_rates
 import json
-import csv
 import io
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from datetime import datetime
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 
 def show_export():
@@ -121,7 +123,7 @@ def show_export():
     st.subheader("Génération du fichier d'export")
     export_format = st.radio(
         "Choisissez le format d'export :",
-        options=["JSON", "XML", "CSV"],
+        options=["JSON", "XML", "Excel"],
         horizontal=True
     )
 
@@ -146,14 +148,14 @@ def show_export():
                 file_name = f"export_{ref_interne}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xml"
                 mime_type = "application/xml"
 
-            else:  # CSV
-                file_content = prepare_csv_export(
+            else:  # Excel
+                file_content = prepare_xlsx_export(
                     dossier, documents, all_articles,
                     total_weight, total_value_doc, total_value_mad,
                     financial_totals
                 )
-                file_name = f"export_{ref_interne}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                mime_type = "text/csv"
+                file_name = f"export_{ref_interne}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
             downloaded = st.download_button(
                 label=f" Télécharger l'export {export_format}",
@@ -379,7 +381,81 @@ def prepare_xml_export(
     return minidom.parseString(ET.tostring(root, 'utf-8')).toprettyxml(indent="  ")
 
 
-def prepare_csv_export(
+# ═══════════════════════════════════════════════════════════════════════════════
+# Export Excel (XLSX) — tableaux encadrés, en-têtes bleus, lignes zébrées jaunes
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Palette
+_FONT_NAME       = "Arial"
+_BLUE_TITLE      = "1F4E78"   # bleu foncé — titres de section
+_BLUE_HEADER     = "2E5395"   # bleu — en-têtes de tableau
+_YELLOW_LABEL    = "FFE699"   # jaune — étiquettes clé/valeur
+_YELLOW_ZEBRA    = "FFF2CC"   # jaune clair — lignes alternées
+_YELLOW_TOTAL    = "FFD966"   # jaune vif — ligne de total
+_WHITE           = "FFFFFF"
+
+
+def _thin_border():
+    side = Side(style="thin", color="000000")
+    return Border(left=side, right=side, top=side, bottom=side)
+
+
+def _section_title(ws, row, title, span):
+    """Ligne de titre de section : fond bleu, texte blanc gras, fusionnée et encadrée."""
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=span)
+    border = _thin_border()
+    for c in range(1, span + 1):
+        cell = ws.cell(row=row, column=c)
+        cell.fill = PatternFill("solid", start_color=_BLUE_TITLE, end_color=_BLUE_TITLE)
+        cell.border = border
+    top_left = ws.cell(row=row, column=1)
+    top_left.value = title
+    top_left.font = Font(name=_FONT_NAME, bold=True, size=12, color=_WHITE)
+    top_left.alignment = Alignment(horizontal="left", vertical="center")
+    return row + 1
+
+
+def _kv_row(ws, row, label, value):
+    """Ligne clé/valeur : étiquette sur fond jaune, valeur sur fond blanc, encadrées."""
+    border = _thin_border()
+    lc = ws.cell(row=row, column=1, value=label)
+    lc.font = Font(name=_FONT_NAME, bold=True, size=10)
+    lc.fill = PatternFill("solid", start_color=_YELLOW_LABEL, end_color=_YELLOW_LABEL)
+    lc.border = border
+    vc = ws.cell(row=row, column=2, value=value)
+    vc.font = Font(name=_FONT_NAME, size=10)
+    vc.fill = PatternFill("solid", start_color=_WHITE, end_color=_WHITE)
+    vc.border = border
+    vc.alignment = Alignment(horizontal="left", vertical="center")
+    return row + 1
+
+
+def _table_header(ws, row, headers):
+    """En-tête de tableau : fond bleu, texte blanc gras, encadré."""
+    border = _thin_border()
+    for c, h in enumerate(headers, start=1):
+        cell = ws.cell(row=row, column=c, value=h)
+        cell.font = Font(name=_FONT_NAME, bold=True, size=10, color=_WHITE)
+        cell.fill = PatternFill("solid", start_color=_BLUE_HEADER, end_color=_BLUE_HEADER)
+        cell.border = border
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    return row + 1
+
+
+def _table_row(ws, row, values, zebra_index):
+    """Ligne de données : lignes paires en jaune clair, impaires en blanc, encadrées."""
+    border = _thin_border()
+    bg = _YELLOW_ZEBRA if zebra_index % 2 == 0 else _WHITE
+    for c, v in enumerate(values, start=1):
+        cell = ws.cell(row=row, column=c, value=v)
+        cell.font = Font(name=_FONT_NAME, size=10)
+        cell.fill = PatternFill("solid", start_color=bg, end_color=bg)
+        cell.border = border
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+    return row + 1
+
+
+def prepare_xlsx_export(
     dossier,
     documents,
     articles,
@@ -392,149 +468,131 @@ def prepare_csv_export(
     first_doc  = documents[0] if documents else {}
     financial_totals = financial_totals or get_document_financial_totals(documents, articles)
 
-    output = io.StringIO()
-    output.write('\ufeff')  # BOM UTF-8 pour Excel
-    w = csv.writer(output, delimiter=';', quoting=csv.QUOTE_MINIMAL)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Export Douanier"
+    ws.sheet_view.showGridLines = False
 
-    SEP      = "=" * 70
-    SEP_THIN = "-" * 70
-    EMPTY    = [""]
+    row = 1
 
-    # ╔══════════════════════════════════════════════════════════╗
-    # ║  SECTION 1 — INFORMATIONS DOSSIER                       ║
-    # ╚══════════════════════════════════════════════════════════╝
-    w.writerow([SEP])
-    w.writerow(["  INFORMATIONS DOSSIER"])
-    w.writerow([SEP])
-    w.writerow(["  Référence",         dossier['ref_interne']])
-    w.writerow(["  Statut",            dossier['statut']])
-    w.writerow(["  Date création",     dossier['date_creation']])
-    w.writerow(["  Numéro document",   first_doc.get('numero_document', '')])
-    w.writerow(["  Date document",     first_doc.get('date_document', '')])
-    w.writerow(["  Devise",            financial_totals["devise"]])
-    w.writerow(["  Date export",       datetime.now().strftime('%d/%m/%Y %H:%M:%S')])
-    w.writerow(["  Générateur",        "DouanePro — Système de Transit Douanier"])
-    w.writerow([SEP])
-    w.writerow(EMPTY)
+    # ── DOSSIER ─────────────────────────────────────────────────────────────
+    row = _section_title(ws, row, "INFORMATIONS DOSSIER", span=2)
+    row = _kv_row(ws, row, "Référence",       dossier['ref_interne'])
+    row = _kv_row(ws, row, "Statut",          dossier['statut'])
+    row = _kv_row(ws, row, "Date création",   str(dossier['date_creation']))
+    row = _kv_row(ws, row, "Numéro document", first_doc.get('numero_document', ''))
+    row = _kv_row(ws, row, "Date document",   first_doc.get('date_document', ''))
+    row = _kv_row(ws, row, "Devise",          financial_totals["devise"])
+    row = _kv_row(ws, row, "Date export",     datetime.now().strftime('%d/%m/%Y %H:%M:%S'))
+    row = _kv_row(ws, row, "Générateur",      "DouanePro — Système de Transit Douanier")
+    row += 1
 
-    # ╔══════════════════════════════════════════════════════════╗
-    # ║  SECTION 2 — EXPÉDITEUR                                 ║
-    # ╚══════════════════════════════════════════════════════════╝
-    w.writerow([SEP])
-    w.writerow(["  EXPÉDITEUR"])
-    w.writerow([SEP])
-    w.writerow(["  Nom",          first_doc.get('expediteur_nom', '')])
-    w.writerow(["  Adresse",      first_doc.get('expediteur_adresse', '')])
-    w.writerow(["  Ville",        first_doc.get('expediteur_ville', '')])
-    w.writerow(["  Code postal",  first_doc.get('expediteur_code_postal', '')])
-    w.writerow(["  Pays",         first_doc.get('expediteur_pays', '')])
-    w.writerow([SEP])
-    w.writerow(EMPTY)
+    # ── EXPÉDITEUR ──────────────────────────────────────────────────────────
+    row = _section_title(ws, row, "EXPÉDITEUR", span=2)
+    row = _kv_row(ws, row, "Nom",         first_doc.get('expediteur_nom', ''))
+    row = _kv_row(ws, row, "Adresse",     first_doc.get('expediteur_adresse', ''))
+    row = _kv_row(ws, row, "Ville",       first_doc.get('expediteur_ville', ''))
+    row = _kv_row(ws, row, "Code postal", first_doc.get('expediteur_code_postal', ''))
+    row = _kv_row(ws, row, "Pays",        first_doc.get('expediteur_pays', ''))
+    row += 1
 
-    # ╔══════════════════════════════════════════════════════════╗
-    # ║  SECTION 3 — DESTINATAIRE                               ║
-    # ╚══════════════════════════════════════════════════════════╝
-    w.writerow([SEP])
-    w.writerow(["  DESTINATAIRE"])
-    w.writerow([SEP])
-    w.writerow(["  Nom",          first_doc.get('destinataire_nom', '')])
-    w.writerow(["  Adresse",      first_doc.get('destinataire_adresse', '')])
-    w.writerow(["  Ville",        first_doc.get('destinataire_ville', '')])
-    w.writerow(["  Code postal",  first_doc.get('destinataire_code_postal', '')])
-    w.writerow(["  Pays",         first_doc.get('destinataire_pays', '')])
-    w.writerow([SEP])
-    w.writerow(EMPTY)
+    # ── DESTINATAIRE ────────────────────────────────────────────────────────
+    row = _section_title(ws, row, "DESTINATAIRE", span=2)
+    row = _kv_row(ws, row, "Nom",         first_doc.get('destinataire_nom', ''))
+    row = _kv_row(ws, row, "Adresse",     first_doc.get('destinataire_adresse', ''))
+    row = _kv_row(ws, row, "Ville",       first_doc.get('destinataire_ville', ''))
+    row = _kv_row(ws, row, "Code postal", first_doc.get('destinataire_code_postal', ''))
+    row = _kv_row(ws, row, "Pays",        first_doc.get('destinataire_pays', ''))
+    row += 1
 
-    # ╔══════════════════════════════════════════════════════════╗
-    # ║  SECTION 4 — DOCUMENTS SOURCE                           ║
-    # ╚══════════════════════════════════════════════════════════╝
-    w.writerow([SEP])
-    w.writerow(["  DOCUMENTS SOURCE"])
-    w.writerow([SEP])
-    w.writerow([
-        "  ID Document",
-        "Type",
-        "Date import",
-        "Montant HT",
-        "TVA",
-        "Total TTC",
-        "Devise",
-        "Chemin fichier",
-    ])
-    w.writerow([SEP_THIN])
-    for doc in documents:
-        w.writerow([
-            f"  {doc['id']}",
-            doc['type_document'],
-            doc['date_import'],
-            f"{_to_float(doc.get('montant_ht', 0)):.2f}",
-            f"{_to_float(doc.get('montant_tva', 0)):.2f}",
-            f"{_to_float(doc.get('valeur_totale_doc', 0)):.2f}",
-            doc.get('devise', ''),
-            doc['chemin_fichier'],
-        ])
-    w.writerow([SEP])
-    w.writerow(EMPTY)
+    # ── DOCUMENTS SOURCE ────────────────────────────────────────────────────
+    doc_headers = ["ID Document", "Type", "Date import", "Montant HT", "TVA", "Total TTC", "Devise", "Chemin fichier"]
+    row = _section_title(ws, row, "DOCUMENTS SOURCE", span=len(doc_headers))
+    row = _table_header(ws, row, doc_headers)
+    for i, doc in enumerate(documents):
+        values = [
+            doc['id'], doc['type_document'], str(doc['date_import']),
+            round(_to_float(doc.get('montant_ht', 0)), 2),
+            round(_to_float(doc.get('montant_tva', 0)), 2),
+            round(_to_float(doc.get('valeur_totale_doc', 0)), 2),
+            doc.get('devise', ''), doc['chemin_fichier'],
+        ]
+        row = _table_row(ws, row, values, i)
+    row += 1
 
-    # ╔══════════════════════════════════════════════════════════╗
-    # ║  SECTION 5 — ARTICLES                                   ║
-    # ╚══════════════════════════════════════════════════════════╝
-    w.writerow([SEP])
-    w.writerow(["  ARTICLES"])
-    w.writerow([SEP])
-    w.writerow([
-        "  N° Ligne",
-        "Désignation",
-        "Code SH",
-        "Quantité",
-        "Unité",
-        "Poids Net (kg)",
-        "Poids Brut (kg)",
+    # ── ARTICLES ────────────────────────────────────────────────────────────
+    art_headers = [
+        "N° Ligne", "Désignation", "Code SH", "Quantité", "Unité",
+        "Poids Net (kg)", "Poids Brut (kg)",
         f"Valeur Unitaire ({financial_totals['devise']})",
         f"Valeur Totale ({financial_totals['devise']})",
-        "Valeur Totale (MAD)",
-        "Origine",
-    ])
-    w.writerow([SEP_THIN])
-    for article in articles:
-        q     = article.get("quantite", 0)
+        "Valeur Totale (MAD)", "Origine",
+    ]
+    row = _section_title(ws, row, "ARTICLES", span=len(art_headers))
+    row = _table_header(ws, row, art_headers)
+    for i, article in enumerate(articles):
         v_doc = article.get("valeur_devise", 0)
         v_mad = round(convert_currency(v_doc, financial_totals["devise"], "MAD"), 2)
-        w.writerow([
-            f"  {article.get('num_ligne')}",
-            article.get("designation", ""),
-            article.get("code_sh", "") or "—",
-            q,
-            article.get("unite", ""),
-            round(article.get("poids_net", 0), 3),
-            round(article.get("poids_brut", 0), 3),
-            round(article.get("valeur_unitaire", 0), 4),
-            f"{v_doc:.2f}",
-            f"{v_mad:.2f}",
-            article.get("origine", ""),
-        ])
-    w.writerow([SEP])
-    w.writerow(EMPTY)
+        values = [
+            article.get('num_ligne'),
+            article.get('designation', ''),
+            article.get('code_sh', '') or '—',
+            article.get('quantite', 0),
+            article.get('unite', ''),
+            round(article.get('poids_net', 0), 3),
+            round(article.get('poids_brut', 0), 3),
+            round(article.get('valeur_unitaire', 0), 4),
+            round(v_doc, 2),
+            v_mad,
+            article.get('origine', ''),
+        ]
+        row = _table_row(ws, row, values, i)
+    row += 1
 
-    # ╔══════════════════════════════════════════════════════════╗
-    # ║  SECTION 6 — TOTAUX                                     ║
-    # ╚══════════════════════════════════════════════════════════╝
-    w.writerow([SEP])
-    w.writerow(["  TOTAUX"])
-    w.writerow([SEP])
-    w.writerow(["  Nombre de documents",   len(documents)])
-    w.writerow(["  Nombre d'articles",     len(articles)])
-    w.writerow([SEP_THIN])
-    w.writerow(["  Poids net total (kg)",  f"{total_weight:.3f}"])
-    w.writerow(["  Poids brut total (kg)", f"{total_brut:.3f}"])
-    w.writerow(["  Montant HT",            f"{financial_totals['montant_ht']:.2f}"])
-    w.writerow(["  TVA",                   f"{financial_totals['montant_tva']:.2f}"])
-    w.writerow(["  Total TTC",             f"{total_value_doc:.2f}"])
-    w.writerow(["  Devise",                financial_totals["devise"]])
-    w.writerow(["  Valeur totale (MAD)",   f"{total_value_mad:.2f}"])
-    w.writerow([SEP])
+    # ── TOTAUX ──────────────────────────────────────────────────────────────
+    row = _section_title(ws, row, "TOTAUX", span=2)
+    row = _kv_row(ws, row, "Nombre de documents",   len(documents))
+    row = _kv_row(ws, row, "Nombre d'articles",     len(articles))
+    row = _kv_row(ws, row, "Poids net total (kg)",  round(total_weight, 3))
+    row = _kv_row(ws, row, "Poids brut total (kg)", round(total_brut, 3))
+    row = _kv_row(ws, row, "Montant HT",            round(financial_totals['montant_ht'], 2))
+    row = _kv_row(ws, row, "TVA",                   round(financial_totals['montant_tva'], 2))
 
-    return output.getvalue()
+    # Ligne "Total TTC" mise en évidence en jaune vif
+    border = _thin_border()
+    lc = ws.cell(row=row, column=1, value="Total TTC")
+    lc.font = Font(name=_FONT_NAME, bold=True, size=11)
+    lc.fill = PatternFill("solid", start_color=_YELLOW_TOTAL, end_color=_YELLOW_TOTAL)
+    lc.border = border
+    vc = ws.cell(row=row, column=2, value=round(total_value_doc, 2))
+    vc.font = Font(name=_FONT_NAME, bold=True, size=11)
+    vc.fill = PatternFill("solid", start_color=_YELLOW_TOTAL, end_color=_YELLOW_TOTAL)
+    vc.border = border
+    row += 1
+
+    row = _kv_row(ws, row, "Devise", financial_totals["devise"])
+
+    # Ligne "Valeur totale (MAD)" mise en évidence en jaune vif
+    lc = ws.cell(row=row, column=1, value="Valeur totale (MAD)")
+    lc.font = Font(name=_FONT_NAME, bold=True, size=11)
+    lc.fill = PatternFill("solid", start_color=_YELLOW_TOTAL, end_color=_YELLOW_TOTAL)
+    lc.border = border
+    vc = ws.cell(row=row, column=2, value=round(total_value_mad, 2))
+    vc.font = Font(name=_FONT_NAME, bold=True, size=11)
+    vc.fill = PatternFill("solid", start_color=_YELLOW_TOTAL, end_color=_YELLOW_TOTAL)
+    vc.border = border
+    row += 1
+
+    # ── Largeurs de colonnes ────────────────────────────────────────────────
+    widths = [22, 30, 16, 14, 14, 14, 16, 20, 22, 18, 16]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    ws.freeze_panes = "A1"
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

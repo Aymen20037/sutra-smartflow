@@ -1,8 +1,9 @@
 import streamlit as st
+import base64
 from dotenv import load_dotenv
 from pathlib import Path
-import base64
 from auth import show_auth_page
+from utils.auth_cookie import restore_session_from_cookie, clear_auth_cookie
 
 BASE_DIR = Path(__file__).parent
 load_dotenv(BASE_DIR / ".env")
@@ -13,6 +14,12 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ── Authentification persistante : restauration via cookie ──────────────
+if "user" not in st.session_state:
+    restored_user = restore_session_from_cookie()
+    if restored_user:
+        st.session_state["user"] = restored_user
 
 if "user" not in st.session_state:
     show_auth_page()
@@ -169,20 +176,20 @@ section[data-testid="stSidebar"] div[data-testid="stButton"] button * {
 with st.sidebar:
     user = st.session_state.get("user", {})
 
+    # ── Logo cliquable → rafraîchit la page ──
     logo_path = BASE_DIR / "sutra.png"
     if logo_path.exists():
         with open(logo_path, "rb") as f:
-            logo_b64 = base64.b64encode(f.read()).decode()
-
+            logo_bytes = f.read()
+        b64_logo = base64.b64encode(logo_bytes).decode()
         st.markdown(
-            f"""
-            <a href="/" target="_self" style="display:block; text-align:center;">
-                <img src="data:image/png;base64,{logo_b64}" width="220"
-                     style="border-radius:8px;" />
-            </a>
-            """,
+            f'<div style="display:flex;justify-content:center;cursor:pointer;" onclick="window.location.reload();">'
+            f'<img src="data:image/png;base64,{b64_logo}" width="220">'
+            f'</div>',
             unsafe_allow_html=True
         )
+    else:
+        st.image("sutra logo.png", width=220)
 
     st.markdown(
         "<div style='text-align:center; font-size:12px; color:#AAB3CC;'>Gestion des Opérations Douanières</div>",
@@ -228,11 +235,20 @@ with st.sidebar:
             " Déclaration"
         ]
 
+    # Restaurer la page depuis l'URL (survit à F5)
+    current_page = st.query_params.get("page", navigation_pages[0])
+    if current_page not in navigation_pages:
+        current_page = navigation_pages[0]
+
     page = st.radio(
         "Navigation",
         navigation_pages,
+        index=navigation_pages.index(current_page),
         label_visibility="collapsed"
     )
+
+    # Sauvegarder la page choisie dans l'URL
+    st.query_params["page"] = page
 
     st.divider()
 
@@ -243,7 +259,10 @@ with st.sidebar:
     )
 
     if logout:
-        del st.session_state["user"]
+        # Nettoyage complet : session + cookie + query_params
+        clear_auth_cookie()
+        if "user" in st.session_state:
+            del st.session_state["user"]
         st.rerun()
 
     st.divider()
