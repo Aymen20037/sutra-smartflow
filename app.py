@@ -212,16 +212,25 @@ with st.sidebar:
 
     st.divider()
 
-    page = st.radio(
-        "Navigation",
-        [
+    if role == "admin":
+        navigation_pages = [
+            " Dashboard Admin",
+            " Gestion utilisateurs",
+            " Gestion documents",
+        ]
+    else:
+        navigation_pages = [
             " Tableau de bord",
             " Téléversement",
             " Révision",
             " Export",
             " Assistant IA",
             " Déclaration"
-        ],
+        ]
+
+    page = st.radio(
+        "Navigation",
+        navigation_pages,
         label_visibility="collapsed"
     )
 
@@ -241,7 +250,19 @@ with st.sidebar:
     st.caption("Version 1.0")
     st.caption("© SUTRA SmartFlow")
 
-if page == " Tableau de bord":
+if page == " Dashboard Admin":
+    from modules.admin import show_admin_dashboard
+    show_admin_dashboard()
+
+elif page == " Gestion utilisateurs":
+    from modules.admin import show_user_management
+    show_user_management()
+
+elif page == " Gestion documents":
+    from modules.admin import show_document_management
+    show_document_management()
+
+elif page == " Tableau de bord":
     from modules.dashboard import show_dashboard
     show_dashboard()
 

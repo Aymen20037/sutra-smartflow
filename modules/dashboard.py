@@ -220,9 +220,9 @@ def show_dashboard():
           Plateforme intelligente d'extraction OCR, IA et gestion douanière
         </p>
         <div class="badge-row">
-          <div class="badge badge-blue">⚡ Groq AI</div>
-          <div class="badge badge-teal">🔍 OCR Hybride</div>
-          <div class="badge badge-amber">📦 Transit douanier</div>
+          <div class="badge badge-blue"> AI</div>
+          <div class="badge badge-teal"> OCR Hybride</div>
+          <div class="badge badge-amber"> Transit douanier</div>
           <div class="badge badge-blue" style="margin-left:auto;">
             <span class="pulse-dot"></span> Actif
           </div>

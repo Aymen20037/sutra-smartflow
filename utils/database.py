@@ -35,6 +35,7 @@ def init_db():
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             role TEXT DEFAULT 'user' CHECK(role IN ('admin', 'user')),
+            is_active INTEGER DEFAULT 1,
             date_creation TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -140,6 +141,29 @@ def init_db():
     _add_document_columns()
     _add_article_columns()
     _add_excel_columns()
+    _add_user_columns()
+    ensure_default_admin()
+
+
+def _add_user_columns():
+    """Ajoute les colonnes manquantes a users."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1")
+    except Exception:
+        pass
+
+    try:
+        cursor.execute("UPDATE users SET is_active = 1 WHERE is_active IS NULL")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_role_active ON users(role, is_active)"
+        )
+    except Exception:
+        pass
+
+    conn.commit()
+    conn.close()
 
 
 def _add_dossier_columns():
@@ -297,7 +321,7 @@ def _check_password(password: str, password_hash: str) -> bool:
             print(f"Erreur verification bcrypt: {e}")
             return False
     if password_hash.startswith("sha256$"):
-        return _hash_password(password) == password_hash
+        return "sha256$" + hashlib.sha256(password.encode("utf-8")).hexdigest() == password_hash
     return hashlib.sha256(password.encode("utf-8")).hexdigest() == password_hash
 
 
@@ -324,6 +348,32 @@ def create_user(username: str, email: str, password: str) -> Optional[int]:
         conn.close()
 
 
+def ensure_default_admin() -> Optional[int]:
+    """Cree l'administrateur par defaut s'il n'existe pas deja."""
+    existing = get_user_by_email("admin@gmail.com")
+    if existing:
+        return existing.get("id")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            '''INSERT INTO users (username, email, password_hash, role, is_active)
+               VALUES (?, ?, ?, ?, ?)''',
+            ("Administrateur", "admin@gmail.com", _hash_password("admin123"), "admin", 1)
+        )
+        admin_id = cursor.lastrowid
+        conn.commit()
+        return admin_id
+    except sqlite3.IntegrityError:
+        return None
+    except Exception as e:
+        print(f"Erreur ensure_default_admin: {e}")
+        return None
+    finally:
+        conn.close()
+
+
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -338,12 +388,81 @@ def verify_password(email: str, password: str) -> Optional[Dict[str, Any]]:
     if not user:
         print(f"Login echoue, utilisateur introuvable: {email}")
         return None
+    if int(user.get("is_active", 1) or 0) != 1:
+        print(f"Login echoue, compte desactive: {email}")
+        return None
     if _check_password(password, user.get("password_hash", "")):
         print(f"Login reussi: {email}")
         user.pop("password_hash", None)
         return user
     print(f"Login echoue, mot de passe invalide: {email}")
     return None
+
+
+def get_all_users() -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        '''SELECT id, username, email, role, is_active, date_creation
+           FROM users
+           ORDER BY date_creation DESC, id DESC'''
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def update_user(user_id: int, username: str, email: str, role: str, is_active: bool) -> bool:
+    if role not in ("admin", "user"):
+        return False
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            '''UPDATE users
+               SET username = ?, email = ?, role = ?, is_active = ?
+               WHERE id = ?''',
+            (
+                username.strip(),
+                email.strip().lower(),
+                role,
+                1 if is_active else 0,
+                user_id,
+            )
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.IntegrityError:
+        return False
+    except Exception as e:
+        print(f"Erreur update_user: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def set_user_active(user_id: int, is_active: bool) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE users SET is_active = ? WHERE id = ?",
+        (1 if is_active else 0, user_id)
+    )
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
+
+def delete_user(user_id: int) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
 
 def update_user_password(email: str, new_password: str) -> bool:
     """Met à jour le mot de passe d'un utilisateur par email."""
@@ -588,6 +707,76 @@ def delete_document(document_id: int) -> bool:
     conn.commit()
     conn.close()
     return affected > 0
+
+
+def get_all_documents_with_owner() -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        '''SELECT
+              dc.*,
+              dt.ref_interne,
+              dt.statut AS dossier_statut,
+              dt.user_id,
+              u.username AS owner_username,
+              u.email AS owner_email
+           FROM documents_commerciaux dc
+           LEFT JOIN dossiers_transit dt ON dt.id = dc.dossier_id
+           LEFT JOIN users u ON u.id = dt.user_id
+           ORDER BY dc.date_import DESC, dc.id DESC'''
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    documents = [dict(row) for row in rows]
+    for doc in documents:
+        path = doc.get("chemin_fichier") or ""
+        try:
+            doc["file_size"] = os.path.getsize(path) if path and os.path.exists(path) else 0
+        except OSError:
+            doc["file_size"] = 0
+    return documents
+
+
+def get_admin_stats() -> Dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+    total_admins = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE is_active = 1")
+    active_users = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM documents_commerciaux")
+    total_documents = cursor.fetchone()[0]
+
+    cursor.execute(
+        '''SELECT
+              SUM(CASE WHEN LOWER(dt.statut) LIKE '%valid%' THEN 1 ELSE 0 END) AS validated,
+              SUM(CASE WHEN LOWER(dt.statut) LIKE '%attente%' OR LOWER(dt.statut) LIKE '%cours%' THEN 1 ELSE 0 END) AS pending,
+              SUM(CASE WHEN LOWER(dt.statut) LIKE '%rejet%' OR LOWER(dt.statut) LIKE '%refus%' THEN 1 ELSE 0 END) AS rejected
+           FROM documents_commerciaux dc
+           LEFT JOIN dossiers_transit dt ON dt.id = dc.dossier_id'''
+    )
+    status_row = cursor.fetchone()
+    conn.close()
+
+    documents = get_all_documents_with_owner()
+    storage_used = sum(int(doc.get("file_size") or 0) for doc in documents)
+
+    return {
+        "total_users": total_users,
+        "total_admins": total_admins,
+        "active_users": active_users,
+        "total_documents": total_documents,
+        "validated_documents": int(status_row["validated"] or 0) if status_row else 0,
+        "pending_documents": int(status_row["pending"] or 0) if status_row else 0,
+        "rejected_documents": int(status_row["rejected"] or 0) if status_row else 0,
+        "storage_used": storage_used,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
