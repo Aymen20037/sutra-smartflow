@@ -75,6 +75,33 @@ def _cell_text(value) -> str:
     return str(value).strip()
 
 
+QTE_VARIANTES = ["Qty", "Quantity", "Quantite", "Quantit", "QTE", "QTY", "Quantities"]
+DESI_VARIANTES = [
+    "Description",
+    "Designation",
+    "Dsignation",
+    "DESI",
+    "Item",
+    "Goods",
+    "Description of Goods",
+]
+HS_VARIANTES = ["HS#", "HS Code", "HS", "Code SH", "Code_SH", "HSCode"]
+VALEUR_VARIANTES = [
+    "Total Amount",
+    "Total",
+    "Valeur",
+    "Value",
+    "Amount",
+    "Total_Amount",
+    "V",
+    "VAL",
+]
+UNIT_PRICE_VARIANTES = ["Unit Price", "Prix Unitaire", "Unit_Price"]
+PN_VARIANTES = ["Materials", "Material", "PN", "Part Number", "Part No", "Ref"]
+POIDS_NET_VARIANTES = ["Net Weight", "Poids Net", "Net_Weight", "NetWeight", "NW"]
+POIDS_BRUT_VARIANTES = ["Gross Weight", "Poids Brut", "Gross_Weight", "GrossWeight", "GW"]
+
+
 def parse_nombre(val):
     """
     Convertit n'importe quelle valeur de cellule Excel en float propre.
@@ -191,22 +218,101 @@ def _prepare_table(df, required_groups):
     return prepared
 
 
+def _score_table_columns(df, column_groups):
+    """Retourne un score simple base sur les familles de colonnes reconnues."""
+    prepared = _prepare_table(df, list(column_groups.values()))
+    score = 0
+    matched = set()
+    for group_name, variantes in column_groups.items():
+        if detecter_colonne(prepared, variantes):
+            score += 1
+            matched.add(group_name)
+    return score, matched
+
+
+def _score_invoice_sheet(df):
+    column_groups = {
+        "qte": QTE_VARIANTES,
+        "desi": DESI_VARIANTES,
+        "hs": HS_VARIANTES,
+        "val": VALEUR_VARIANTES + UNIT_PRICE_VARIANTES,
+        "pn": PN_VARIANTES,
+    }
+    score, matched = _score_table_columns(df, column_groups)
+    required = {"qte", "desi"}
+    if required.issubset(matched):
+        return score
+    return 0
+
+
+def _score_packing_sheet(df):
+    column_groups = {
+        "desi": DESI_VARIANTES,
+        "pn": PN_VARIANTES,
+        "net": POIDS_NET_VARIANTES,
+        "gross": POIDS_BRUT_VARIANTES,
+        "hs": HS_VARIANTES,
+    }
+    score, matched = _score_table_columns(df, column_groups)
+    has_identifier = bool({"desi", "pn"} & matched)
+    has_weight = bool({"net", "gross"} & matched)
+    if has_identifier and has_weight:
+        return score
+    return 0
+
+
+def _find_named_sheet(feuilles, keywords):
+    return next(
+        (name for name in feuilles if any(keyword in name.lower() for keyword in keywords)),
+        None,
+    )
+
+
+def _find_best_sheet_by_content(feuilles, scorer, excluded_names=None):
+    excluded_names = set(excluded_names or [])
+    best_name = None
+    best_score = 0
+    for name, df in feuilles.items():
+        if name in excluded_names:
+            continue
+        score = scorer(df)
+        if score > best_score:
+            best_name = name
+            best_score = score
+    return best_name
+
+
+def detecter_feuilles_commerciales(feuilles):
+    invoice_name = _find_named_sheet(feuilles, ["invoice", "facture"])
+    packing_name = _find_named_sheet(feuilles, ["packing"])
+
+    if not invoice_name:
+        invoice_name = _find_best_sheet_by_content(feuilles, _score_invoice_sheet)
+
+    if not packing_name:
+        packing_name = _find_best_sheet_by_content(
+            feuilles,
+            _score_packing_sheet,
+            excluded_names=[invoice_name] if invoice_name else None,
+        )
+
+    return invoice_name, packing_name
+
+
 def lire_feuille_invoice(df):
     df = _prepare_table(
         df,
         [
-            ["Qty", "Quantity", "QTE", "Quantite", "QTY"],
-            ["Description", "Designation", "DESI", "Item", "Description of Goods"],
+            QTE_VARIANTES,
+            DESI_VARIANTES,
         ],
     )
-    qte_col = detecter_colonne(df, ["Qty", "Quantity", "QTE", "Quantite", "QTY"])
-    desi_col = detecter_colonne(
-        df, ["Description", "Designation", "DESI", "Item", "Description of Goods"]
-    )
-    hs_col = detecter_colonne(df, ["HS#", "HS Code", "HS", "Code SH", "Code_SH", "HSCode"])
-    unit_col = detecter_colonne(df, ["Unit Price", "Prix Unitaire", "Unit_Price"])
-    total_col = detecter_colonne(df, ["Total Amount", "Total", "Valeur", "Amount", "Total_Amount"])
-    pn_col = detecter_colonne(df, ["Materials", "PN", "Part Number", "Part No", "Ref", "Material"])
+    qte_col = detecter_colonne(df, QTE_VARIANTES)
+    desi_col = detecter_colonne(df, DESI_VARIANTES)
+    hs_col = detecter_colonne(df, HS_VARIANTES)
+    unit_col = detecter_colonne(df, UNIT_PRICE_VARIANTES)
+    total_col = detecter_colonne(df, VALEUR_VARIANTES)
+    pn_col = detecter_colonne(df, PN_VARIANTES)
 
     if not desi_col or not qte_col:
         raise ValueError("colonnes Invoice minimales introuvables (QTE/DESI)")
@@ -237,20 +343,23 @@ def lire_feuille_packing(df):
     df = _prepare_table(
         df,
         [
-            ["Description", "Designation", "DESI", "Description of Goods"],
-            ["Net Weight", "Poids Net", "Net_Weight", "NetWeight"],
-            ["Gross Weight", "Poids Brut", "Gross_Weight"],
+            DESI_VARIANTES,
+            POIDS_NET_VARIANTES,
+            POIDS_BRUT_VARIANTES,
+            PN_VARIANTES,
         ],
     )
-    qte_col = detecter_colonne(df, ["Qty", "Quantity", "Quantities", "QTE"])
-    desi_col = detecter_colonne(df, ["Description", "Designation", "DESI", "Description of Goods"])
-    net_col = detecter_colonne(df, ["Net Weight", "Poids Net", "Net_Weight", "NetWeight"])
-    gross_col = detecter_colonne(df, ["Gross Weight", "Poids Brut", "Gross_Weight"])
-    hs_col = detecter_colonne(df, ["HS#", "HS Code", "HS", "Code SH", "Code_SH", "HSCode"])
-    pn_col = detecter_colonne(df, ["Materials", "PN", "Part Number", "Material"])
+    qte_col = detecter_colonne(df, QTE_VARIANTES)
+    desi_col = detecter_colonne(df, DESI_VARIANTES)
+    net_col = detecter_colonne(df, POIDS_NET_VARIANTES)
+    gross_col = detecter_colonne(df, POIDS_BRUT_VARIANTES)
+    hs_col = detecter_colonne(df, HS_VARIANTES)
+    pn_col = detecter_colonne(df, PN_VARIANTES)
 
-    if not desi_col:
-        raise ValueError("colonne Packing designation introuvable")
+    if not desi_col and not pn_col:
+        raise ValueError("colonnes Packing minimales introuvables (DESI/PN)")
+    if not net_col and not gross_col:
+        raise ValueError("colonnes Packing poids introuvables")
 
     total_markers = [idx for idx, row in df.iterrows() if _row_contains_total(row)]
     if total_markers:
@@ -274,15 +383,16 @@ def lire_feuille_packing(df):
 
     lignes = []
     for _, row in df.iterrows():
-        desi = _cell_text(row.get(desi_col))
+        desi = _cell_text(row.get(desi_col)) if desi_col else ""
         qte = parse_nombre(row.get(qte_col)) if qte_col else 0.0
         poids_net = parse_nombre(row.get(net_col)) if net_col else 0.0
         poids_brut = parse_nombre(row.get(gross_col)) if gross_col else 0.0
+        pn = _cell_text(row.get(pn_col)) if pn_col else ""
 
         if est_ligne_total(desi):
             continue
 
-        if not desi and poids_net == 0 and qte == 0:
+        if not desi and not pn and poids_net == 0 and poids_brut == 0 and qte == 0:
             continue
 
         lignes.append({
@@ -291,7 +401,7 @@ def lire_feuille_packing(df):
             "poids_net": arrondir_valeur(poids_net, 3),
             "poids_brut": arrondir_valeur(poids_brut, 3),
             "hs": _hs_text(row.get(hs_col)) if hs_col else "",
-            "pn": _cell_text(row.get(pn_col)) if pn_col else "",
+            "pn": pn,
         })
     total_pn = sum(ligne["poids_net"] for ligne in lignes)
     st.write(f"  └─ Poids net total lu : {total_pn:.3f} kg ({len(lignes)} lignes)")
@@ -319,27 +429,23 @@ def parser_fichier_excel(fichier_bytes, nom_fichier):
         result["erreurs"].append(f"lecture Excel impossible : {e}")
         return result
 
-    invoice_name = next(
-        (name for name in feuilles if "invoice" in name.lower() or "facture" in name.lower()),
-        None,
-    )
-    packing_name = next((name for name in feuilles if "packing" in name.lower()), None)
+    invoice_name, packing_name = detecter_feuilles_commerciales(feuilles)
 
     if invoice_name:
         try:
             result["lignes_invoice"] = lire_feuille_invoice(feuilles[invoice_name])
         except Exception as e:
-            result["erreurs"].append(f"Invoice : {e}")
-    else:
-        result["erreurs"].append("feuille Invoice introuvable")
+            result["erreurs"].append(f"Invoice ({invoice_name}) : {e}")
 
     if packing_name:
         try:
             result["lignes_packing"] = lire_feuille_packing(feuilles[packing_name])
         except Exception as e:
-            result["erreurs"].append(f"Packing List : {e}")
-    else:
-        result["erreurs"].append("feuille Packing List introuvable")
+            result["erreurs"].append(f"Packing List ({packing_name}) : {e}")
+
+    if not result["lignes_invoice"] and not result["lignes_packing"]:
+        if not result["erreurs"]:
+            result["erreurs"].append("aucune feuille Invoice ou Packing List exploitable identifiee")
 
     return result
 
